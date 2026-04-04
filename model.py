@@ -1,5 +1,4 @@
 import torch.nn as nn
-import torch.nn.functional as F
 from dhg.models import HGNNP
 
 
@@ -32,6 +31,6 @@ class HGM(nn.Module):
         z = zs + zf
         x_hat = self.decoder(z)
         # 投影到对比学习空间
-        zs=self.proj_spatial(zs)
-        zf=self.proj_gene(zf)
+        zs = self.proj_spatial(zs)
+        zf = self.proj_gene(zf)
         return z, zs, zf, x_hat
