@@ -41,7 +41,7 @@ def preprocess(path, hvg_num=3000):
 def KnnHyperGraph(adata, k1=8, k2=8):
     spatial = adata.obsm["spatial"]  # (n_spots, 2)
     nn = NearestNeighbors(n_neighbors=k1 + 1, metric="euclidean").fit(spatial)
-    indices = nn.kneighbors(return_distance=False)  # shape=(n_spots, k1 + 1)
+    indices = nn.kneighbors(spatial, return_distance=False)  # shape=(n_spots, k1 + 1)
     shg = Hypergraph(num_v=spatial.shape[0], e_list=indices.tolist())
     print(f"空间超图构建完成: |V|={shg.num_v}, |E|={shg.num_e}, k={k1}")
 
@@ -49,7 +49,7 @@ def KnnHyperGraph(adata, k1=8, k2=8):
     nn = NearestNeighbors(
         n_neighbors=k2 + 1, metric="correlation", algorithm="brute", n_jobs=-1
     ).fit(genes)
-    indices = nn.kneighbors(return_distance=False)  # shape=(n_spots, k2 + 1)
+    indices = nn.kneighbors(genes, return_distance=False)  # shape=(n_spots, k2 + 1)
     fhg = Hypergraph(num_v=genes.shape[0], e_list=indices.tolist())
     print(f"特征超图构建完成: |V|={fhg.num_v}, |E|={fhg.num_e}, k={k2}")
 
@@ -68,7 +68,7 @@ def infoNCE(p1, p2, temperature=0.2):
     return 0.5 * (loss_12 + loss_21)
 
 
-def cluster_score(adata, z, pca=False, n_neighbors=15, model_name="EEE"):
+def cluster_score(adata, z_eval, pca=False, n_neighbors=15, model_name="EEE"):
     """运行 KMeans / mclust / Leiden，并返回分类结果与评估指标。"""
     from rpy2.robjects.packages import importr
     from sklearn.cluster import KMeans
@@ -79,18 +79,18 @@ def cluster_score(adata, z, pca=False, n_neighbors=15, model_name="EEE"):
         fowlkes_mallows_score,
     )
 
-    z = z.detach().cpu().numpy()
+    # z = z.detach().cpu().numpy()
     y_true = pd.Categorical(adata.obs["ground_truth"]).codes  # 转为整数标签
     true_k = int(np.unique(y_true).size)
-    print(f"有效样本数：{len(y_true)} | 真实聚类数：{true_k}")
+    # print(f"有效样本数：{len(y_true)} | 真实聚类数：{true_k}")
 
-    # 降维可能导致性能下降
-    if pca:
-        pca = PCA(n_components=20)
-        z_eval = pca.fit_transform(z)
-        print("pca components = 20")
-    else:
-        z_eval = z
+    # # 降维可能导致性能下降
+    # if pca:
+    #     pca = PCA(n_components=20)
+    #     z_eval = pca.fit_transform(z)
+    #     print("pca components = 20")
+    # else:
+    #     z_eval = z
 
     # 1) KMeans
     # km_labels = KMeans(n_clusters=true_k, random_state=0, n_init=20).fit_predict(z_eval)
