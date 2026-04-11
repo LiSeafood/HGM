@@ -88,6 +88,7 @@ def cluster_score(adata, z, pca=False, n_neighbors=15, model_name="EEE"):
     if pca:
         pca = PCA(n_components=20)
         z_eval = pca.fit_transform(z)
+        print("pca components = 20")
     else:
         z_eval = z
 
