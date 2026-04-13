@@ -29,10 +29,14 @@ def preprocess(path, hvg_num=3000):
     # 筛选高变基因。这里筛选的个数也有问题，会较大程度上影响性能
     sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=hvg_num)
     adata = adata[:, adata.var["highly_variable"]].copy()
+    label = pd.read_table(path + "/metadata.tsv")
+    adata.obs["ground_truth"] = label["layer_guess_reordered"].values
     sc.pp.normalize_total(adata, target_sum=1e4)  # 归一化
     sc.pp.log1p(adata)  # 对数化
-    # 标准化。要不要标准化是个问题，在之前的测试中标准化会导致性能下降，可能是因为标准化会抹平一些重要的表达差异。不过也有可能是因为标准化后的数值范围更小，导致模型训练不稳定。后续可以尝试调整学习率或者增加训练轮数来看看是否能提升性能。
+    # 标准化。要不要标准化是个问题，虽然大部分模型都用了标准化，但在之前的测试中标准化会导致性能下降，可能是因为标准化会抹平一些重要的表达差异。不过也有可能是因为标准化后的数值范围更小，导致模型训练不稳定。后续可以尝试调整学习率或者增加训练轮数来看看是否能提升性能。
     # sc.pp.scale(adata, zero_center=False, max_value=10)
+    valid = ~pd.isnull(adata.obs["ground_truth"])  # 去空值
+    adata = adata[valid]
     print("preprocess done, adata.shape:", adata.shape)
     return adata
 
@@ -56,8 +60,8 @@ def KnnHyperGraph(adata, k1=8, k2=8):
     return shg, fhg
 
 
-# ========= 跨视图对比损失（InfoNCE） =========
 def infoNCE(p1, p2, temperature=0.2):
+    """跨视图对比损失。p1和p2是两个视图的表示，shape=(N, d)。"""
     p1 = F.normalize(p1, dim=1)
     p2 = F.normalize(p2, dim=1)
     logits = torch.mm(p1, p2.t()) / temperature  # 相似度矩阵(N, N)
@@ -72,25 +76,15 @@ def cluster_score(adata, z_eval, pca=False, n_neighbors=15, model_name="EEE"):
     """运行 KMeans / mclust / Leiden，并返回分类结果与评估指标。"""
     from rpy2.robjects.packages import importr
     from sklearn.cluster import KMeans
-    from sklearn.decomposition import PCA
     from sklearn.metrics import (
         adjusted_rand_score,
         normalized_mutual_info_score,
         fowlkes_mallows_score,
     )
 
-    # z = z.detach().cpu().numpy()
     y_true = pd.Categorical(adata.obs["ground_truth"]).codes  # 转为整数标签
     true_k = int(np.unique(y_true).size)
-    # print(f"有效样本数：{len(y_true)} | 真实聚类数：{true_k}")
-
-    # # 降维可能导致性能下降
-    # if pca:
-    #     pca = PCA(n_components=20)
-    #     z_eval = pca.fit_transform(z)
-    #     print("pca components = 20")
-    # else:
-    #     z_eval = z
+    print(f"有效样本数：{len(y_true)} | 真实聚类数：{true_k}")
 
     # 1) KMeans
     # km_labels = KMeans(n_clusters=true_k, random_state=0, n_init=20).fit_predict(z_eval)

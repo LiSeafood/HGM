@@ -1,6 +1,7 @@
 from utils import *
 from model import HGM
 from tqdm.auto import tqdm
+from sklearn.decomposition import PCA
 
 
 # 有好多超参数, 可能以后要写config文件来管理这些超参数。有可能根据不同数据的超参数不一样。
@@ -8,7 +9,6 @@ class HGMST:
     def __init__(self, path, seed=2020):
         fix_seed(seed)
         self.adata = preprocess(path)
-        self.label = pd.read_table(path + "/metadata.tsv")
         self.shg, self.fhg = KnnHyperGraph(self.adata)
         self.feature = torch.tensor(self.adata.X.toarray(), dtype=torch.float32)
         self.model = HGM(in_dim=self.feature.shape[1])
@@ -37,7 +37,7 @@ class HGMST:
             loss = alpha * loss_re + beta * loss_con
             loss.backward()
             optimizer.step()
-            if epoch % 20 == 0:
+            if epoch % epochs == 0:
                 tqdm.write(
                     f"Epoch {epoch:3d} | recon={loss_re.item():.6f} | contrast={loss_con.item():.6f} | total={loss.item():.6f}"
                 )
@@ -47,14 +47,15 @@ class HGMST:
         with torch.no_grad():
             z, _, _, _ = self.model(self.feature, self.shg, self.fhg)
 
-        valid = ~pd.isnull(self.label["layer_guess_reordered"])  # 去空值
-        adata = self.adata[valid].copy()
-        label = self.label[valid].copy()
-        self.adata.obs["ground_truth"] = label["layer_guess_reordered"].values
+        z = z.detach().cpu().numpy()
+        pca = PCA(n_components=20)
+        z = pca.fit_transform(z)  # 先降维再去空值，效果可能会更好，待验证
+        # valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
+        # adata = self.adata[valid]
+        # z = z[valid]
+        adata = self.adata
         cluster_df, res_df = cluster_score(adata, z)
-
-        print("\n分类结果（前5行）:")
-        print(cluster_df.head(5))
 
         print("\n聚类方法评估结果:")
         print(res_df.round(4))
+        return cluster_df, res_df
