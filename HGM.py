@@ -6,9 +6,14 @@ from sklearn.decomposition import PCA
 
 # 有好多超参数, 可能以后要写config文件来管理这些超参数。有可能根据不同数据的超参数不一样。
 class HGMST:
-    def __init__(self, path, seed=2020):
+    def __init__(self, path, prevalid=False, seed=2020):
         fix_seed(seed)
         self.adata = preprocess(path)
+        self.prevalid = prevalid
+        # 猜测：先去空值再去训练更极端（好的更好差的更差），先训练再去空值更平滑。
+        if self.prevalid: # 先去空值再去训练
+            valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
+            self.adata = self.adata[valid]
         self.shg, self.fhg = KnnHyperGraph(self.adata)
         self.feature = torch.tensor(self.adata.X.toarray(), dtype=torch.float32)
         self.model = HGM(in_dim=self.feature.shape[1])
@@ -42,20 +47,20 @@ class HGMST:
                     f"Epoch {epoch:3d} | recon={loss_re.item():.6f} | contrast={loss_con.item():.6f} | total={loss.item():.6f}"
                 )
 
-    def eval(self):
+    def eval(self, show=False):
         self.model.eval()
         with torch.no_grad():
             z, _, _, _ = self.model(self.feature, self.shg, self.fhg)
-
+        adata = self.adata.copy()
         z = z.detach().cpu().numpy()
         pca = PCA(n_components=20)
         z = pca.fit_transform(z)  # 先降维再去空值，效果可能会更好，待验证
-        # valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
-        # adata = self.adata[valid]
-        # z = z[valid]
-        adata = self.adata
+        if not self.prevalid: # 先训练再去空值
+            valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
+            adata = adata[valid]
+            z = z[valid]
         cluster_df, res_df = cluster_score(adata, z)
-
-        print("\n聚类方法评估结果:")
-        print(res_df.round(4))
+        if show:
+            print("聚类方法评估结果:")
+            print(res_df.round(4))
         return cluster_df, res_df

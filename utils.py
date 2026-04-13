@@ -9,6 +9,8 @@ from sklearn.neighbors import NearestNeighbors
 import os
 import random
 
+# 别忘了DLPFC后期可能还要做一个refinement的步骤，取邻域类
+
 
 def fix_seed(seed):
     os.environ["PYTHONHASHSEED"] = str(seed)
@@ -33,10 +35,8 @@ def preprocess(path, hvg_num=3000):
     adata.obs["ground_truth"] = label["layer_guess_reordered"].values
     sc.pp.normalize_total(adata, target_sum=1e4)  # 归一化
     sc.pp.log1p(adata)  # 对数化
-    # 标准化。要不要标准化是个问题，虽然大部分模型都用了标准化，但在之前的测试中标准化会导致性能下降，可能是因为标准化会抹平一些重要的表达差异。不过也有可能是因为标准化后的数值范围更小，导致模型训练不稳定。后续可以尝试调整学习率或者增加训练轮数来看看是否能提升性能。
+    # 标准化。标准化之后似乎更加极端了，好的更加好坏的更加坏了。
     # sc.pp.scale(adata, zero_center=False, max_value=10)
-    valid = ~pd.isnull(adata.obs["ground_truth"])  # 去空值
-    adata = adata[valid]
     print("preprocess done, adata.shape:", adata.shape)
     return adata
 
@@ -47,7 +47,6 @@ def KnnHyperGraph(adata, k1=8, k2=8):
     nn = NearestNeighbors(n_neighbors=k1 + 1, metric="euclidean").fit(spatial)
     indices = nn.kneighbors(spatial, return_distance=False)  # shape=(n_spots, k1 + 1)
     shg = Hypergraph(num_v=spatial.shape[0], e_list=indices.tolist())
-    print(f"空间超图构建完成: |V|={shg.num_v}, |E|={shg.num_e}, k={k1}")
 
     genes = np.asarray(adata.X.toarray(), dtype=np.float32, order="C")
     nn = NearestNeighbors(
@@ -55,7 +54,9 @@ def KnnHyperGraph(adata, k1=8, k2=8):
     ).fit(genes)
     indices = nn.kneighbors(genes, return_distance=False)  # shape=(n_spots, k2 + 1)
     fhg = Hypergraph(num_v=genes.shape[0], e_list=indices.tolist())
-    print(f"特征超图构建完成: |V|={fhg.num_v}, |E|={fhg.num_e}, k={k2}")
+    print(
+        f"spatial hypergraph: |E|={shg.num_e}, k={k1}, feature hypergraph: |E|={fhg.num_e}, k={k2}"
+    )
 
     return shg, fhg
 
