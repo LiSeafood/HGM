@@ -1,5 +1,6 @@
 import torch.nn as nn
 import torch
+import torch.nn.functional as F
 from dhg.models import HGNNP
 
 
@@ -19,29 +20,51 @@ class Attention(nn.Module):
         return (beta * z).sum(1), beta
 
 
+class ZINBDecoder(nn.Module):
+    def __init__(self, in_dim, hid_dim, out_dim):
+        super().__init__()
+        self.decoder = nn.Sequential(
+            nn.Linear(in_dim, hid_dim),
+            nn.BatchNorm1d(hid_dim),
+            nn.ReLU(),
+        )
+        self.pi = nn.Linear(hid_dim, out_dim)
+        self.disp = nn.Linear(hid_dim, out_dim)
+        self.mean = nn.Linear(hid_dim, out_dim)
+        self.disp_act = lambda x: torch.clamp(F.softplus(x), 1e-4, 1e4)
+        self.mean_act = lambda x: torch.clamp(torch.exp(x), 1e-5, 1e6)
+
+    def forward(self, emb):
+        hidden = self.decoder(emb)
+        pi = torch.sigmoid(self.pi(hidden))
+        disp = self.disp_act(self.disp(hidden))
+        mean = self.mean_act(self.mean(hidden))
+        return pi, disp, mean
+
+
+class PlainDecoder(nn.Module):
+    def __init__(self, in_dim, hid_dim, out_dim):
+        super().__init__()
+        self.decoder = nn.Sequential(
+            nn.Linear(in_dim, hid_dim),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(hid_dim, out_dim),
+        )
+
+    def forward(self, emb):
+        return self.decoder(emb)
+
+
 class HGM(nn.Module):
-    def __init__(self, in_dim, hid_dim=128, out_dim=32, proj_dim=32):
+    def __init__(self, in_dim, hid_dim=128, out_dim=32, proj_dim=32, use_zinb=False):
         super().__init__()
         self.sencoder = HGNNP(in_dim, hid_dim, out_dim, use_bn=True)
         self.fencoder = HGNNP(in_dim, hid_dim, out_dim, use_bn=True)
         self.attention = Attention(out_dim)
-        self.decoder = nn.Sequential(
-            nn.Linear(out_dim, hid_dim),
-            nn.ReLU(),
-            nn.Dropout(0.5),
-            nn.Linear(hid_dim, in_dim),
-        )
-        # 对比学习投影头(常见做法：encoder输出 -> projection space)。需不需要改中间层维度呢？这两层投影头真的有必要吗？
-        # self.proj_feature = nn.Sequential(
-        #     nn.Linear(out_dim, out_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(out_dim, proj_dim),
-        # )
-        # self.proj_spatial = nn.Sequential(
-        #     nn.Linear(out_dim, out_dim),
-        #     nn.ReLU(),
-        #     nn.Linear(out_dim, proj_dim),
-        # )
+        self.use_zinb = use_zinb
+        self.plain_decoder = PlainDecoder(out_dim, hid_dim, in_dim)
+        self.zinb = ZINBDecoder(out_dim, hid_dim, in_dim)
 
     def forward(self, x, shg, fhg):
         zs = self.sencoder(x, shg)
@@ -50,8 +73,8 @@ class HGM(nn.Module):
         z_stack = torch.stack([zs, zf], dim=1)  # 自适应加权融合
         z, att = self.attention(z_stack)
         self.att = att  # 可以把注意力权重保存下来，打印查看空间和特征哪个更重要
-        x_hat = self.decoder(z)
-        # 投影到对比学习空间, 用于后续对比学习
-        # zs = self.proj_spatial(zs)
-        # zf = self.proj_feature(zf)
+        if self.use_zinb:
+            pi, disp, mean = self.zinb(z)
+            return z, zs, zf, pi, disp, mean
+        x_hat = self.plain_decoder(z)
         return z, zs, zf, x_hat

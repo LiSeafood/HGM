@@ -6,20 +6,25 @@ from sklearn.decomposition import PCA
 
 # 有好多超参数, 可能以后要写config文件来管理这些超参数。有可能根据不同数据的超参数不一样。
 class HGMST:
-    def __init__(self, path, prevalid=False, seed=2020):
+    def __init__(self, path, prevalid=False, seed=2020, use_zinb=False):
         fix_seed(seed)
         self.adata = preprocess(path)
         self.prevalid = prevalid
+        self.use_zinb = use_zinb
         # 猜测：先去空值再去训练更极端（好的更好差的更差），先训练再去空值更平滑。
-        if self.prevalid: # 先去空值再去训练
+        if self.prevalid:  # 先去空值再去训练
             valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
             self.adata = self.adata[valid]
         self.shg, self.fhg = KnnHyperGraph(self.adata)
         self.feature = torch.tensor(self.adata.X.toarray(), dtype=torch.float32)
-        self.model = HGM(in_dim=self.feature.shape[1])
+        self.counts = torch.tensor(
+            self.adata.layers["counts"].toarray(), dtype=torch.float32
+        )
+        self.model = HGM(in_dim=self.feature.shape[1], use_zinb=use_zinb)
         if torch.cuda.is_available():
             self.model = self.model.cuda()
             self.feature = self.feature.cuda()
+            self.counts = self.counts.cuda()
             self.shg = self.shg.to(device="cuda")
             self.fhg = self.fhg.to(device="cuda")
 
@@ -36,8 +41,13 @@ class HGMST:
         self.model.train()
         for epoch in tqdm(range(1, epochs + 1)):
             optimizer.zero_grad()
-            _, zs, zf, x_hat = self.model(self.feature, self.shg, self.fhg)
-            loss_re = F.mse_loss(x_hat, self.feature)  # 重建损失
+            outputs = self.model(self.feature, self.shg, self.fhg)
+            if self.use_zinb:
+                _, zs, zf, pi, theta, mean = outputs
+                loss_re = zinb_loss(self.counts, pi, theta, mean)  # 重建损失
+            else:
+                _, zs, zf, x_hat = outputs
+                loss_re = F.mse_loss(x_hat, self.feature)  # 重建损失
             loss_con = infoNCE(zs, zf, temperature=temperature)  # 对比损失
             loss = alpha * loss_re + beta * loss_con
             loss.backward()
@@ -50,12 +60,12 @@ class HGMST:
     def eval(self, show=False):
         self.model.eval()
         with torch.no_grad():
-            z, _, _, _ = self.model(self.feature, self.shg, self.fhg)
+            z = self.model(self.feature, self.shg, self.fhg)[0]
         adata = self.adata.copy()
         z = z.detach().cpu().numpy()
         pca = PCA(n_components=20)
         z = pca.fit_transform(z)  # 先降维再去空值，效果可能会更好，待验证
-        if not self.prevalid: # 先训练再去空值
+        if not self.prevalid:  # 先训练再去空值
             valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
             adata = adata[valid]
             z = z[valid]

@@ -28,6 +28,7 @@ def fix_seed(seed):
 def preprocess(path, hvg_num=3000):
     adata = sc.read_visium(path, count_file="filtered_feature_bc_matrix.h5")
     adata.var_names_make_unique()
+    adata.layers["counts"] = adata.X.copy()
     # 筛选高变基因。这里筛选的个数也有问题，会较大程度上影响性能
     sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=hvg_num)
     adata = adata[:, adata.var["highly_variable"]].copy()
@@ -71,6 +72,33 @@ def infoNCE(p1, p2, temperature=0.2):
     loss_12 = F.cross_entropy(logits, labels)
     loss_21 = F.cross_entropy(logits.t(), labels)
     return 0.5 * (loss_12 + loss_21)
+
+
+def zinb_loss(x, pi, theta, mean, eps=1e-8):
+    """Zero-Inflated Negative Binomial 负对数似然。
+
+    这个实现对齐 Spatial-MGCN 的参数化：
+    pi = dropout probability
+    theta = dispersion
+    mean = mean expression
+    """
+    x = x.float()
+    pi = pi.clamp(min=eps, max=1.0 - eps)
+    theta = theta.clamp(min=eps, max=1e6)
+    mean = mean.clamp(min=eps, max=1e6)
+
+    nb_case = (
+        torch.lgamma(theta + eps)
+        + torch.lgamma(x + 1.0)
+        - torch.lgamma(x + theta + eps)
+        + (theta + x) * torch.log(1.0 + (mean / (theta + eps)))
+        + x * (torch.log(theta + eps) - torch.log(mean + eps))
+    ) - torch.log(1.0 - pi + eps)
+
+    zero_nb = torch.pow(theta / (theta + mean + eps), theta)
+    zero_case = -torch.log(pi + ((1.0 - pi) * zero_nb) + eps)
+    result = torch.where(torch.lt(x, 1e-8), zero_case, nb_case)
+    return torch.mean(result)
 
 
 def cluster_score(adata, z_eval, pca=False, n_neighbors=15, model_name="EEE"):
