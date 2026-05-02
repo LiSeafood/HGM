@@ -8,6 +8,7 @@ from dhg import Hypergraph
 from sklearn.neighbors import NearestNeighbors
 import os
 import random
+import warnings
 
 # 别忘了DLPFC后期可能还要做一个refinement的步骤，取邻域类
 
@@ -26,7 +27,18 @@ def fix_seed(seed):
 
 
 def preprocess(path, hvg_num=3000):
-    adata = sc.read_visium(path, count_file="filtered_feature_bc_matrix.h5")
+    with warnings.catch_warnings():# 屏蔽警告信息
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Use `squidpy\.read\.visium` instead\.",
+            category=FutureWarning,
+        )
+        warnings.filterwarnings(
+            "ignore",
+            message=r"Variable names are not unique\. To make them unique, call `\.var_names_make_unique`\.",
+            category=UserWarning,
+        )
+        adata = sc.read_visium(path, count_file="filtered_feature_bc_matrix.h5")
     adata.var_names_make_unique()
     adata.layers["counts"] = adata.X.copy()
     # 筛选高变基因。这里筛选的个数也有问题，会较大程度上影响性能
@@ -36,9 +48,9 @@ def preprocess(path, hvg_num=3000):
     adata.obs["ground_truth"] = label["layer_guess_reordered"].values
     sc.pp.normalize_total(adata, target_sum=1e4)  # 归一化
     sc.pp.log1p(adata)  # 对数化
-    # 标准化。标准化之后似乎更加极端了，好的更加好坏的更加坏了。
+    # 标准化。标准化之后似乎更加极端了，好的更加好坏的更加坏了。总体来说还是不好
     # sc.pp.scale(adata, zero_center=False, max_value=10)
-    print("preprocess done, adata.shape:", adata.shape)
+    # print("preprocess done, adata.shape:", adata.shape)
     return adata
 
 
@@ -113,7 +125,7 @@ def cluster_score(adata, z_eval, pca=False, n_neighbors=15, model_name="EEE"):
 
     y_true = pd.Categorical(adata.obs["ground_truth"]).codes  # 转为整数标签
     true_k = int(np.unique(y_true).size)
-    print(f"有效样本数：{len(y_true)} | 真实聚类数：{true_k}")
+    # print(f"有效样本数：{len(y_true)} | 真实聚类数：{true_k}")
 
     # 1) KMeans
     # km_labels = KMeans(n_clusters=true_k, random_state=0, n_init=20).fit_predict(z_eval)

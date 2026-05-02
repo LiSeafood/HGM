@@ -6,7 +6,7 @@ from sklearn.decomposition import PCA
 
 # 有好多超参数, 可能以后要写config文件来管理这些超参数。有可能根据不同数据的超参数不一样。
 class HGMST:
-    def __init__(self, path, prevalid=False, seed=2020, use_zinb=False):
+    def __init__(self, path, k1, k2, prevalid=False, seed=2020, use_zinb=False):
         fix_seed(seed)
         self.adata = preprocess(path)
         self.prevalid = prevalid
@@ -15,7 +15,7 @@ class HGMST:
         if self.prevalid:  # 先去空值再去训练
             valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
             self.adata = self.adata[valid]
-        self.shg, self.fhg = KnnHyperGraph(self.adata)
+        self.shg, self.fhg = KnnHyperGraph(self.adata, k1=k1, k2=k2)
         self.feature = torch.tensor(self.adata.X.toarray(), dtype=torch.float32)
         self.counts = torch.tensor(
             self.adata.layers["counts"].toarray(), dtype=torch.float32
@@ -52,10 +52,10 @@ class HGMST:
             loss = alpha * loss_re + beta * loss_con
             loss.backward()
             optimizer.step()
-            if epoch % epochs == 0:
-                tqdm.write(
-                    f"Epoch {epoch:3d} | recon={loss_re.item():.6f} | contrast={loss_con.item():.6f} | total={loss.item():.6f}"
-                )
+            # if epoch % epochs == 0:
+            #     tqdm.write(
+            #         f"Epoch {epoch:3d} | recon={loss_re.item():.6f} | contrast={loss_con.item():.6f} | total={loss.item():.6f}"
+            #     )
 
     def eval(self, show=False):
         self.model.eval()
