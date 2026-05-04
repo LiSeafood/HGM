@@ -6,9 +6,24 @@ from sklearn.decomposition import PCA
 
 # 有好多超参数, 可能以后要写config文件来管理这些超参数。有可能根据不同数据的超参数不一样。
 class HGMST:
-    def __init__(self, path, k1, k2, prevalid=False, seed=2020, use_zinb=False):
+    def __init__(
+        self,
+        path=None,
+        k1=4,
+        k2=8,
+        prevalid=False,
+        seed=2020,
+        use_zinb=False,
+        adata=None,
+        hvg_num=3000,
+    ):
         fix_seed(seed)
-        self.adata = preprocess(path)
+        if adata is None:
+            if path is None:
+                raise ValueError("Either path or adata must be provided.")
+            self.adata = preprocess(path, hvg_num=hvg_num)
+        else:
+            self.adata = adata.copy()
         self.prevalid = prevalid
         self.use_zinb = use_zinb
         # 猜测：先去空值再去训练更极端（好的更好差的更差），先训练再去空值更平滑。
@@ -17,14 +32,14 @@ class HGMST:
             self.adata = self.adata[valid]
         self.shg, self.fhg = KnnHyperGraph(self.adata, k1=k1, k2=k2)
         self.feature = torch.tensor(self.adata.X.toarray(), dtype=torch.float32)
-        self.counts = torch.tensor(
-            self.adata.layers["counts"].toarray(), dtype=torch.float32
-        )
+        # self.counts = torch.tensor(
+        #     self.adata.layers["counts"].toarray(), dtype=torch.float32
+        # )
         self.model = HGM(in_dim=self.feature.shape[1], use_zinb=use_zinb)
         if torch.cuda.is_available():
             self.model = self.model.cuda()
             self.feature = self.feature.cuda()
-            self.counts = self.counts.cuda()
+            # self.counts = self.counts.cuda()
             self.shg = self.shg.to(device="cuda")
             self.fhg = self.fhg.to(device="cuda")
 

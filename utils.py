@@ -6,6 +6,7 @@ import numpy as np
 import rpy2.robjects as ro
 from dhg import Hypergraph
 from sklearn.neighbors import NearestNeighbors
+from sklearn.decomposition import PCA
 import os
 import random
 import warnings
@@ -27,7 +28,7 @@ def fix_seed(seed):
 
 
 def preprocess(path, hvg_num=3000):
-    with warnings.catch_warnings():# 屏蔽警告信息
+    with warnings.catch_warnings():  # 屏蔽警告信息
         warnings.filterwarnings(
             "ignore",
             message=r"Use `squidpy\.read\.visium` instead\.",
@@ -40,7 +41,7 @@ def preprocess(path, hvg_num=3000):
         )
         adata = sc.read_visium(path, count_file="filtered_feature_bc_matrix.h5")
     adata.var_names_make_unique()
-    adata.layers["counts"] = adata.X.copy()
+    # adata.layers["counts"] = adata.X.copy()
     # 筛选高变基因。这里筛选的个数也有问题，会较大程度上影响性能
     sc.pp.highly_variable_genes(adata, flavor="seurat_v3", n_top_genes=hvg_num)
     adata = adata[:, adata.var["highly_variable"]].copy()
@@ -54,23 +55,28 @@ def preprocess(path, hvg_num=3000):
     return adata
 
 
-# 如何确定k1和k2的值呢？
-def KnnHyperGraph(adata, k1=8, k2=8):
+# 如何确定k1和k2的值呢？在模型还未定下来之前，初步实验暂定为4和8
+def KnnHyperGraph(adata, k1=4, k2=8, n_pcs=0):
+    """构建空间与特征超图。
+    """
     spatial = adata.obsm["spatial"]  # (n_spots, 2)
     nn = NearestNeighbors(n_neighbors=k1 + 1, metric="euclidean").fit(spatial)
     indices = nn.kneighbors(spatial, return_distance=False)  # shape=(n_spots, k1 + 1)
     shg = Hypergraph(num_v=spatial.shape[0], e_list=indices.tolist())
 
     genes = np.asarray(adata.X.toarray(), dtype=np.float32, order="C")
+    # 可选降维以降低构图时的计算量和噪声
+    if n_pcs:
+            pca = PCA(n_components=n_pcs, random_state=0)
+            genes = pca.fit_transform(genes)
     nn = NearestNeighbors(
         n_neighbors=k2 + 1, metric="correlation", algorithm="brute", n_jobs=-1
     ).fit(genes)
     indices = nn.kneighbors(genes, return_distance=False)  # shape=(n_spots, k2 + 1)
     fhg = Hypergraph(num_v=genes.shape[0], e_list=indices.tolist())
-    print(
-        f"spatial hypergraph: |E|={shg.num_e}, k={k1}, feature hypergraph: |E|={fhg.num_e}, k={k2}"
-    )
-
+    # print(
+    #     f"spatial hypergraph: |E|={shg.num_e}, k={k1}, feature hypergraph: |E|={fhg.num_e}, k={k2}"
+    # )
     return shg, fhg
 
 
@@ -87,13 +93,7 @@ def infoNCE(p1, p2, temperature=0.2):
 
 
 def zinb_loss(x, pi, theta, mean, eps=1e-8):
-    """Zero-Inflated Negative Binomial 负对数似然。
-
-    这个实现对齐 Spatial-MGCN 的参数化：
-    pi = dropout probability
-    theta = dispersion
-    mean = mean expression
-    """
+    """Zero-Inflated Negative Binomial 负对数似然。"""
     x = x.float()
     pi = pi.clamp(min=eps, max=1.0 - eps)
     theta = theta.clamp(min=eps, max=1e6)
