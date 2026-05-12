@@ -7,6 +7,7 @@ import rpy2.robjects as ro
 from dhg import Hypergraph
 from sklearn.neighbors import NearestNeighbors
 from sklearn.decomposition import PCA
+from sklearn.metrics import pairwise_distances
 import os
 import random
 import warnings
@@ -56,22 +57,34 @@ def preprocess(path, hvg_num=3000):
 
 
 # 如何确定k1和k2的值呢？在模型还未定下来之前，初步实验暂定为4和8
-def KnnHyperGraph(adata, k1=4, k2=8, n_pcs=0):
-    """构建空间与特征超图。
-    """
+def KnnHyperGraph(adata, k1=4,radius=0, k2=8, pca=0):
     spatial = adata.obsm["spatial"]  # (n_spots, 2)
-    nn = NearestNeighbors(n_neighbors=k1 + 1, metric="euclidean").fit(spatial)
-    indices = nn.kneighbors(spatial, return_distance=False)  # shape=(n_spots, k1 + 1)
-    shg = Hypergraph(num_v=spatial.shape[0], e_list=indices.tolist())
-
     genes = np.asarray(adata.X.toarray(), dtype=np.float32, order="C")
-    # 可选降维以降低构图时的计算量和噪声
-    if n_pcs:
-            pca = PCA(n_components=n_pcs, random_state=0)
-            genes = pca.fit_transform(genes)
-    nn = NearestNeighbors(
-        n_neighbors=k2 + 1, metric="correlation", algorithm="brute", n_jobs=-1
-    ).fit(genes)
+    if pca:  # 可选降维以降低构图时的计算量和噪声
+        genes = PCA(n_components=pca, random_state=0).fit_transform(genes)
+        
+    if radius:
+        norm = np.linalg.norm(genes, axis=1, keepdims=True)
+        genes_norm = genes / (norm + 1e-12)  # L2 归一化后的基因表示，用于候选邻居内的相似度排序
+        nn = NearestNeighbors(n_neighbors= radius+1, metric="euclidean").fit(spatial)
+        indices = nn.kneighbors(spatial, return_distance=False)  # shape=(n_spots, k1 + 1)
+        e_list = []
+        for i in range(spatial.shape[0]):
+            candidate_idx = indices[i]
+            # 2. 计算中心节点 i 与其空间候选邻居的 基因相似度
+            center_gene = genes_norm[i]
+            neighbor_genes = genes_norm[candidate_idx]
+            sim_gene = neighbor_genes @ center_gene
+            # 3. 过滤/排序：只保留基因相似度最高的前 k1+1 个邻居，剔除处于边界上的、基因差异大的空间邻居
+            kept_idx = candidate_idx[np.argsort(-sim_gene)[: k1 + 1]]
+            e_list.append(kept_idx.tolist())
+        shg = Hypergraph(num_v=spatial.shape[0], e_list=e_list)
+    else:
+        nn = NearestNeighbors(n_neighbors= k1 + 1, metric="euclidean").fit(spatial)
+        indices = nn.kneighbors(spatial, return_distance=False)  # shape=(n_spots, k1 + 1)
+        shg = Hypergraph(num_v=spatial.shape[0], e_list=indices.tolist()) 
+
+    nn = NearestNeighbors(n_neighbors=k2 + 1, metric="correlation").fit(genes)
     indices = nn.kneighbors(genes, return_distance=False)  # shape=(n_spots, k2 + 1)
     fhg = Hypergraph(num_v=genes.shape[0], e_list=indices.tolist())
     # print(
@@ -90,6 +103,24 @@ def infoNCE(p1, p2, temperature=0.2):
     loss_12 = F.cross_entropy(logits, labels)
     loss_21 = F.cross_entropy(logits.t(), labels)
     return 0.5 * (loss_12 + loss_21)
+
+
+def self_infoNCE(z, z_neg=None, temperature=0.2):
+    """自对比损失：自身为正样本，负样本为打乱或外部给定。"""
+    z = F.normalize(z, dim=1)
+    n = z.size(0)
+    if n <= 1:
+        return z.new_tensor(0.0)
+    if z_neg is None:
+        perm = torch.randperm(n, device=z.device)
+        z_neg = z[perm]
+    else:
+        z_neg = F.normalize(z_neg, dim=1)
+    pos_sim = torch.sum(z * z, dim=1, keepdim=True) / temperature
+    neg_sim = torch.mm(z, z_neg.t()) / temperature
+    logits = torch.cat([pos_sim, neg_sim], dim=1)
+    labels = torch.zeros(n, dtype=torch.long, device=z.device)
+    return F.cross_entropy(logits, labels)
 
 
 def zinb_loss(x, pi, theta, mean, eps=1e-8):

@@ -3,7 +3,6 @@ import torch
 import torch.nn.functional as F
 from dhg.models import HGNNP
 
-
 class Attention(nn.Module):
     def __init__(self, in_size, hidden_size=16):
         super(Attention, self).__init__()
@@ -57,7 +56,7 @@ class PlainDecoder(nn.Module):
 
 
 class HGM(nn.Module):
-    def __init__(self, in_dim, hid_dim=128, out_dim=32, proj_dim=32, use_zinb=False):
+    def __init__(self, in_dim, hid_dim=128, out_dim=32, use_zinb=False):
         super().__init__()
         self.sencoder = HGNNP(in_dim, hid_dim, out_dim, use_bn=True)
         self.fencoder = HGNNP(in_dim, hid_dim, out_dim, use_bn=True)

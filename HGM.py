@@ -10,9 +10,11 @@ class HGMST:
         self,
         path=None,
         k1=4,
+        radius=0,
         k2=8,
-        prevalid=False,
+        pca=0,
         seed=2020,
+        prevalid=False,
         use_zinb=False,
         adata=None,
         hvg_num=3000,
@@ -30,7 +32,9 @@ class HGMST:
         if self.prevalid:  # 先去空值再去训练
             valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
             self.adata = self.adata[valid]
-        self.shg, self.fhg = KnnHyperGraph(self.adata, k1=k1, k2=k2)
+        self.shg, self.fhg = KnnHyperGraph(
+            self.adata, k1=k1, radius=radius, k2=k2, pca=pca
+        )
         self.feature = torch.tensor(self.adata.X.toarray(), dtype=torch.float32)
         # self.counts = torch.tensor(
         #     self.adata.layers["counts"].toarray(), dtype=torch.float32
