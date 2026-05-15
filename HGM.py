@@ -30,8 +30,8 @@ class HGMST:
         self.use_zinb = use_zinb
         # 猜测：先去空值再去训练更极端（好的更好差的更差），先训练再去空值更平滑。
         if self.prevalid:  # 先去空值再去训练
-            valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
-            self.adata = self.adata[valid]
+            valid_mask = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
+            self.adata = self.adata[valid_mask]
         self.shg, self.fhg = KnnHyperGraph(
             self.adata, k1=k1, radius=radius, k2=k2, pca=pca
         )
@@ -76,7 +76,7 @@ class HGMST:
             #         f"Epoch {epoch:3d} | recon={loss_re.item():.6f} | contrast={loss_con.item():.6f} | total={loss.item():.6f}"
             #     )
 
-    def eval(self, show=False):
+    def eval(self, show=False, refine_radius=240.0):
         self.model.eval()
         with torch.no_grad():
             z = self.model(self.feature, self.shg, self.fhg)[0]
@@ -85,10 +85,14 @@ class HGMST:
         pca = PCA(n_components=20)
         z = pca.fit_transform(z)  # 先降维再去空值，效果可能会更好，待验证
         if not self.prevalid:  # 先训练再去空值
-            valid = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
-            adata = adata[valid]
-            z = z[valid]
-        cluster_df, res_df = cluster_score(adata, z)
+            valid_mask = ~pd.isnull(self.adata.obs["ground_truth"])  # 去空值
+            adata = adata[valid_mask]
+            z = z[valid_mask]
+        cluster_df, res_df = cluster_score(
+            adata,
+            z,
+            refine_radius=refine_radius,
+        )
         if show:
             print("聚类方法评估结果:")
             print(res_df.round(4))
