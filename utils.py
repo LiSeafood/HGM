@@ -56,8 +56,48 @@ def preprocess(path, hvg_num=3000):
     return adata
 
 
+def _edges_to_adj(edges, num_v):
+    adj = np.zeros((num_v, num_v), dtype=np.float32)
+    for i, nbrs in enumerate(edges):
+        adj[i, nbrs] = 1.0
+    return np.maximum(adj, adj.T)
+
+
+def _adaptive_fuse_adj(adj_list, iters=1, eps=1e-8):
+    adj_fused = sum(adj_list) / float(len(adj_list))
+    weights = np.ones(len(adj_list), dtype=np.float32) / float(len(adj_list))
+    for _ in range(max(1, iters)):
+        for idx, adj in enumerate(adj_list):
+            diff = adj_fused - adj
+            weights[idx] = 1.0 / (np.linalg.norm(diff, ord="fro") + eps)
+        weights = weights / weights.sum()
+        adj_fused = sum(w * adj for w, adj in zip(weights, adj_list))
+    return adj_fused, weights
+
+
+def _adj_to_hyperedges(adj, k):
+    n = adj.shape[0]
+    k = min(int(k), n - 1)
+    edges = []
+    for i in range(n):
+        row = adj[i].copy()
+        row[i] = row.max() + 1.0
+        idx = np.argpartition(-row, k)[: k + 1]
+        edges.append(idx.tolist())
+    return edges
+
+
 # 如何确定k1和k2的值呢？在模型还未定下来之前，初步实验暂定为4和8
-def KnnHyperGraph(adata, k1=4, radius=0, k2=8, pca=0):
+def KnnHyperGraph(
+    adata,
+    k1=4,
+    radius=0,
+    k2=8,
+    pca=0,
+    fuse_mode=None,
+    k_fuse=None,
+    fusion_iters=1,
+):
     spatial = adata.obsm["spatial"]  # (n_spots, 2)
     genes = np.asarray(adata.X.toarray(), dtype=np.float32, order="C")
     if pca:  # 可选降维以降低构图时的计算量和噪声
@@ -83,19 +123,43 @@ def KnnHyperGraph(adata, k1=4, radius=0, k2=8, pca=0):
             kept_pos = np.argsort(-sim_gene)[: k1 + 1]
             kept_idx = candidate_idx[kept_pos]
             e_list.append(kept_idx.tolist())
-        shg = Hypergraph(num_v=spatial.shape[0], e_list=e_list)
+        spatial_edges = e_list
     else:
         nn = NearestNeighbors(n_neighbors=k1 + 1, metric="euclidean").fit(spatial)
         _, idx_all = nn.kneighbors(spatial, return_distance=True)
-        shg = Hypergraph(num_v=spatial.shape[0], e_list=idx_all.tolist())
+        spatial_edges = idx_all.tolist()
+
+    shg = Hypergraph(num_v=spatial.shape[0], e_list=spatial_edges)
 
     nn = NearestNeighbors(n_neighbors=k2 + 1, metric="correlation").fit(genes)
     indices = nn.kneighbors(genes, return_distance=False)  # shape=(n_spots, k2 + 1)
-    fhg = Hypergraph(num_v=genes.shape[0], e_list=indices.tolist())
+    feature_edges = indices.tolist()
+    fhg = Hypergraph(num_v=genes.shape[0], e_list=feature_edges)
     # print(
     #     f"spatial hypergraph: |E|={shg.num_e}, k={k1}, feature hypergraph: |E|={fhg.num_e}, k={k2}"
     # )
-    return shg, fhg
+    if not fuse_mode:
+        return shg, fhg
+
+    if fuse_mode == "edge_union":
+        fused_edges = spatial_edges + feature_edges
+    elif fuse_mode == "neighbor_union":
+        fused_edges = [
+            sorted(set(spatial_edges[i]) | set(feature_edges[i]))
+            for i in range(spatial.shape[0])
+        ]
+    elif fuse_mode == "adaptive_weight":
+        if k_fuse is None:
+            k_fuse = max(k1, k2)
+        adj_s = _edges_to_adj(spatial_edges, spatial.shape[0])
+        adj_f = _edges_to_adj(feature_edges, spatial.shape[0])
+        adj_fused, _ = _adaptive_fuse_adj([adj_s, adj_f], iters=fusion_iters)
+        fused_edges = _adj_to_hyperedges(adj_fused, k_fuse)
+    else:
+        raise ValueError(f"Unsupported fuse_mode: {fuse_mode}")
+
+    hfg = Hypergraph(num_v=spatial.shape[0], e_list=fused_edges)
+    return shg, fhg, hfg
 
 
 def infoNCE(p1, p2, temperature=0.2):
